@@ -10,6 +10,9 @@ import pandas as pd
 from tqdm import tqdm
 import wandb
 
+from jax.config import config
+config.update("jax_numpy_rank_promotion", "raise")
+
 from wordle_utils import score_guess
 
 
@@ -51,7 +54,7 @@ def build_functions():
         hk.LayerNorm(-1, True, True, name='critic_ln2'),
         jax.nn.relu,
       ])(current_information)
-      return hk.Linear(len(guesses))(features)
+      return hk.Linear(len(guesses), w_init=jnp.zeros, b_init=jnp.zeros)(features)
 
     def init(guess, score):
       info = encoder(guess, score)
@@ -90,7 +93,8 @@ def training_step(key, solutions, opt_state, params):
       evaluation = critic(θ, information)
       guess_idx = jax.random.categorical(key, guess_logits)
       guess = select_guess(guesses, guess_idx)
-      evaluations.append(jnp.take_along_axis(evaluation, guess_idx.reshape(-1, 1), axis=-1))
+      evaluations.append(
+        jnp.take_along_axis(evaluation, guess_idx.reshape(-1, 1), axis=-1)[..., 0])
 
       expected_rewards.append(jnp.mean(jax.nn.log_softmax(guess_logits, axis=-1) *
                               jax.lax.stop_gradient(evaluation), axis=-1))
@@ -121,15 +125,16 @@ def training_step(key, solutions, opt_state, params):
 
 
 def train_epoch(key, opt_state, params):
-  key, subkey = jax.random.split(key)
-  batch_data = jax.random.permutation(key, guesses, axis=-1)
-  N = batch_data.shape[0]
-  batch_data = batch_data[:(N//batch_size)*batch_size]
   metrics = {}
-  for batch in rearrange(batch_data, '(N B) ... -> N B ...', B=64):
-    step_metrics, opt_state, params = training_step(key, batch, opt_state, params)
-    if not metrics: metrics = {k: [] for k in step_metrics}
-    metrics = jax.tree_multimap(lambda x, acc: acc + [x], step_metrics, metrics)
+  for subepoch in range(10):
+    key, subkey = jax.random.split(key)
+    batch_data = jax.random.permutation(key, guesses, axis=-1)
+    N = batch_data.shape[0]
+    batch_data = batch_data[:(N//batch_size)*batch_size]
+    for batch in rearrange(batch_data, '(N B) ... -> N B ...', B=batch_size):
+      step_metrics, opt_state, params = training_step(key, batch, opt_state, params)
+      if not metrics: metrics = {k: [] for k in step_metrics}
+      metrics = jax.tree_multimap(lambda x, acc: acc + [x], step_metrics, metrics)
   return metrics, opt_state, params
 
 
@@ -148,7 +153,7 @@ if __name__ == '__main__':
   opt = optax.adam(1e-3, b1=0.5, b2=0.9)
   opt_state = opt.init(params)
 
-  batch_size = 64
+  batch_size = 1024
 
   wandb.init(project='WordleRL')
   key = jax.random.PRNGKey(0)
