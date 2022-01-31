@@ -42,7 +42,10 @@ def build_functions():
         hk.LayerNorm(-1, True, True, name='actor_ln2'),
         jax.nn.relu,
       ])(current_information)
-      return hk.Linear(len(guesses))(features)
+      return hk.Linear(len(guesses),
+          w_init=jnp.zeros,
+          b_init=jnp.zeros,
+          name='actor_fc3')(features)
 
     def critic(current_information):
       global guesses
@@ -54,7 +57,10 @@ def build_functions():
         hk.LayerNorm(-1, True, True, name='critic_ln2'),
         jax.nn.relu,
       ])(current_information)
-      return hk.Linear(len(guesses), w_init=jnp.zeros, b_init=jnp.zeros)(features)
+      return hk.Linear(len(guesses),
+          w_init=jnp.zeros,
+          b_init=jnp.zeros,
+          name='critic_fc3')(features)
 
     def init(guess, score):
       info = encoder(guess, score)
@@ -104,8 +110,9 @@ def training_step(key, solutions, opt_state, params):
       information = information + encoder(θ, guess, score)
 
     scores = jnp.stack(scores, axis=1)
-    solved = jnp.all(scores == 2, axis=-1)
-    reward = solved.sum(axis=1)
+    solved_row = jnp.all(scores == 2, axis=-1)
+    solved = jnp.any(solved_row, axis=-1)
+    reward = jnp.sum(solved_row, axis=-1)
     critic_loss = sum(jnp.mean(jnp.square(ev - reward)) for ev in evaluations)
     expected_reward = jnp.mean(jnp.stack(expected_rewards))
     actor_loss = -expected_reward
@@ -115,7 +122,7 @@ def training_step(key, solutions, opt_state, params):
         actor_loss=actor_loss,
         expected_reward=expected_reward,
         actual_reward=jnp.mean(reward),
-        pct_solved=jnp.mean(solved),
+        pct_solved=100*jnp.mean(solved),
     )
 
   grads, metrics = jax.grad(calculate_loss, has_aux=True)(params)
@@ -150,7 +157,7 @@ if __name__ == '__main__':
   score = jnp.ones([7, 5], dtype=jnp.uint8)
   params = net.init(rng, guess, score)
   encoder, actor, critic = unpack_without_apply_rng(net)
-  opt = optax.adam(1e-3, b1=0.5, b2=0.9)
+  opt = optax.adam(1e-3)
   opt_state = opt.init(params)
 
   batch_size = 1024
